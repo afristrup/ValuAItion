@@ -67,7 +67,7 @@ def main():
     df_train_raw = get_raw_data("train")
 
     # perform time-based split
-    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.05)
 
     # Save validation indices for evaluation
     val_indices = df_val_split.index.values

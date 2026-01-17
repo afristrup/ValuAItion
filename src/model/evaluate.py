@@ -19,11 +19,17 @@ from src.data.process import (
 )
 from src.data.constants import CAT_COLUMNS
 from src.data.feature_engineering import (
+    apply_feature_engineering,
     create_advanced_date_features,
     create_age_features,
     create_area_features,
     create_interaction_features,
     create_price_ratio_features,
+    create_polynomial_features,
+    create_binning_features,
+    create_location_features,
+    create_enhanced_interaction_features,
+    create_aggregated_price_features,
 )
 from src.model.utils import get_device
 
@@ -87,7 +93,7 @@ def compute_metrics(
         if os.path.exists(split_indices_path):
             # Load raw training data and recreate the time-based split
             df_train_raw = get_raw_data("train")
-            df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+            df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.05)
 
             # Process validation data (using training statistics)
             df_val_split = transform_values(
@@ -105,12 +111,28 @@ def compute_metrics(
             # Remove unused columns before feature engineering
             df_val_split = remove_unused_columns(df_val_split)
 
-            # Apply the same feature engineering as training
-            df_val_split = create_advanced_date_features(df_val_split)
-            df_val_split = create_age_features(df_val_split)
-            df_val_split = create_area_features(df_val_split)
-            df_val_split = create_interaction_features(df_val_split)
-            df_val_split = create_price_ratio_features(df_val_split)
+            # Process training split for feature engineering
+            df_train_split = transform_values(
+                df_train_split,
+                "train",
+                run_id,
+                data_config["calculate_street_price_sqm"],
+                data_config["reduce_zip"],
+                data_config["reduce_municipality"],
+            )
+            df_train_split = handle_missing_values(
+                df_train_split, "train", data_config["reduce_zip"]
+            )
+            df_train_split = remove_unused_columns(df_train_split)
+
+            # Use apply_feature_engineering to match training pipeline exactly
+            # This handles all feature engineering, aggregated features, and low variance removal
+            df_train_split, df_val_split = apply_feature_engineering(
+                df_train_split,
+                df_val_split,
+                remove_low_variance=True,
+                variance_threshold=0.01,
+            )
 
             # One-hot encode categorical columns
             remaining_cat_cols = [col for col in CAT_COLUMNS if col in df_val_split.columns]
@@ -146,7 +168,7 @@ def compute_metrics(
                 "This may not match the exact split used during training."
             )
             df_train_raw = get_raw_data("train")
-            _, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+            _, df_val_split = time_based_split(df_train_raw, test_size=0.05)
 
             # Process validation data
             df_val_split = transform_values(
@@ -164,12 +186,29 @@ def compute_metrics(
             # Remove unused columns before feature engineering
             df_val_split = remove_unused_columns(df_val_split)
 
-            # Apply the same feature engineering as training
-            df_val_split = create_advanced_date_features(df_val_split)
-            df_val_split = create_age_features(df_val_split)
-            df_val_split = create_area_features(df_val_split)
-            df_val_split = create_interaction_features(df_val_split)
-            df_val_split = create_price_ratio_features(df_val_split)
+            # Process training split for feature engineering
+            df_train_split, _ = time_based_split(df_train_raw, test_size=0.05)
+            df_train_split = transform_values(
+                df_train_split,
+                "train",
+                run_id,
+                data_config["calculate_street_price_sqm"],
+                data_config["reduce_zip"],
+                data_config["reduce_municipality"],
+            )
+            df_train_split = handle_missing_values(
+                df_train_split, "train", data_config["reduce_zip"]
+            )
+            df_train_split = remove_unused_columns(df_train_split)
+
+            # Use apply_feature_engineering to match training pipeline exactly
+            # This handles all feature engineering, aggregated features, and low variance removal
+            df_train_split, df_val_split = apply_feature_engineering(
+                df_train_split,
+                df_val_split,
+                remove_low_variance=True,
+                variance_threshold=0.01,
+            )
 
             # One-hot encode categorical columns
             remaining_cat_cols = [col for col in CAT_COLUMNS if col in df_val_split.columns]
@@ -217,12 +256,54 @@ def compute_metrics(
         df_eval = handle_missing_values(df_eval, split, data_config["reduce_zip"])
         df_eval = remove_unused_columns(df_eval)
 
-        # Apply the same feature engineering as training
-        df_eval = create_advanced_date_features(df_eval)
-        df_eval = create_age_features(df_eval)
-        df_eval = create_area_features(df_eval)
-        df_eval = create_interaction_features(df_eval)
-        df_eval = create_price_ratio_features(df_eval)
+        # For test data, we need training data to apply feature engineering correctly
+        # (for aggregated price features and low variance removal)
+        if split == "test":
+            # Load training data to use with apply_feature_engineering
+            # Match the training pipeline: time-based split, then limit to last 50k samples
+            df_train_raw_for_fe = get_raw_data("train")
+            df_train_split_for_fe, _ = time_based_split(df_train_raw_for_fe, test_size=0.05)
+            
+            # Limit to last 50,000 samples (matching training_tabpfn.py)
+            if "TRADE_DATE" in df_train_split_for_fe.columns:
+                df_train_split_for_fe = df_train_split_for_fe.sort_values("TRADE_DATE")
+                df_train_split_for_fe = df_train_split_for_fe.tail(50000)
+            else:
+                df_train_split_for_fe = df_train_split_for_fe.tail(50000)
+            
+            df_train_split_for_fe = transform_values(
+                df_train_split_for_fe,
+                "train",
+                run_id,
+                data_config["calculate_street_price_sqm"],
+                data_config["reduce_zip"],
+                data_config["reduce_municipality"],
+            )
+            df_train_split_for_fe = handle_missing_values(
+                df_train_split_for_fe, "train", data_config["reduce_zip"]
+            )
+            df_train_split_for_fe = remove_unused_columns(df_train_split_for_fe)
+            
+            # Use apply_feature_engineering to match training pipeline exactly
+            # This handles all feature engineering, aggregated features, and low variance removal
+            df_train_split_for_fe, df_eval = apply_feature_engineering(
+                df_train_split_for_fe,
+                df_eval,
+                remove_low_variance=True,
+                variance_threshold=0.01,
+            )
+        else:
+            # For train split, we can't use apply_feature_engineering without a separate train set
+            # So apply feature engineering manually (but this should rarely be used for evaluation)
+            df_eval = create_advanced_date_features(df_eval)
+            df_eval = create_age_features(df_eval)
+            df_eval = create_area_features(df_eval)
+            df_eval = create_interaction_features(df_eval)
+            df_eval = create_price_ratio_features(df_eval)
+            df_eval = create_polynomial_features(df_eval)
+            df_eval = create_binning_features(df_eval)
+            df_eval = create_location_features(df_eval)
+            df_eval = create_enhanced_interaction_features(df_eval)
 
         # One-hot encode categorical columns
         remaining_cat_cols = [col for col in CAT_COLUMNS if col in df_eval.columns]

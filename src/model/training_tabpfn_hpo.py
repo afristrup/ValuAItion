@@ -73,7 +73,7 @@ def main():
     df_train_raw = get_raw_data("train")
 
     # perform time-based split
-    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.05)
 
     # Limit training data to most recent 10,000 samples (sorted by TRADE_DATE)
     # This helps with TabPFN performance on CPU and memory constraints

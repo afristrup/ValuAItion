@@ -45,6 +45,8 @@ evaluate:
 		fi; \
 	fi
 
+
+
 evaluate-test:
 	@if [ -z "$(RUN_ID)" ]; then \
 		if [ -z "$(LATEST_RUN_ID)" ]; then \
@@ -115,6 +117,19 @@ evaluate-train:
 		else \
 			uv run python -m src.model.evaluate --run_id $(RUN_ID) --split train; \
 		fi; \
+	fi
+
+submit:
+	@if [ -z "$(RUN_ID)" ]; then \
+		if [ -z "$(LATEST_RUN_ID)" ]; then \
+			echo "Error: No RUN_ID provided and no models found. Usage: make submit RUN_ID=<run_id>"; \
+			exit 1; \
+		else \
+			echo "Using most recent run_id: $(LATEST_RUN_ID)"; \
+			uv run python -m src.model.evaluate --run_id $(LATEST_RUN_ID) --submit; \
+		fi; \
+	else \
+		uv run python -m src.model.evaluate --run_id $(RUN_ID) --submit; \
 	fi
 
 viz:

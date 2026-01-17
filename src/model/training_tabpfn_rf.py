@@ -60,7 +60,7 @@ def main():
 
     # perform time-based split
     logging.info("Performing time-based split...")
-    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.05)
 
     # Using all available training data for RF preprocessing approach
     # RF preprocessing breaks the problem into smaller sub-problems, so it can handle larger datasets

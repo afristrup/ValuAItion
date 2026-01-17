@@ -48,7 +48,7 @@ def main():
     df_train_raw = get_raw_data("train")
 
     # perform time-based split
-    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.05)
 
     # Limit training data to most recent 50,000 samples (sorted by TRADE_DATE)
     # This helps with TabPFN performance on CPU and memory constraints
@@ -196,6 +196,17 @@ def main():
     train_r2 = r2_score(y_train_actual, y_train_pred)
     val_r2 = r2_score(y_val_actual, y_val_pred)
 
+    # Calculate relative errors
+    relative_errors = np.abs((y_train_actual - y_train_pred) / y_train_actual)
+    precision_20 = float(np.mean(relative_errors <= 0.20) * 100)
+    precision_10 = float(np.mean(relative_errors <= 0.10) * 100)
+    precision_5 = float(np.mean(relative_errors <= 0.05) * 100)
+
+    relative_errors_val = np.abs((y_val_actual - y_val_pred) / y_val_actual)
+    precision_20_val = float(np.mean(relative_errors_val <= 0.20) * 100)
+    precision_10_val = float(np.mean(relative_errors_val <= 0.10) * 100)
+    precision_5_val = float(np.mean(relative_errors_val <= 0.05) * 100)
+
     model_scores = {
         "train_rmse": float(np.round(train_rmse, 5)),
         "val_rmse": float(np.round(val_rmse, 5)),
@@ -203,10 +214,23 @@ def main():
         "val_mae": float(np.round(val_mae, 5)),
         "train_r2": float(np.round(train_r2, 5)),
         "val_r2": float(np.round(val_r2, 5)),
+        "precision_20pct": precision_20,
+        "precision_10pct": precision_10,
+        "precision_5pct": precision_5,
+        "n_samples": len(y_train_actual),
+        "n_valid_samples": len(y_train_actual[~np.isnan(y_train_actual)]),
+        "n_missing_labels": len(y_train_actual[np.isnan(y_train_actual)]),
     }
 
     logging.info(f"Training RMSE: {train_rmse:.5f}, Validation RMSE: {val_rmse:.5f}")
     logging.info(f"Training R²: {train_r2:.5f}, Validation R²: {val_r2:.5f}")
+    logging.info(f"Training precision 20%: {precision_20:.2f}%, Validation precision 20%: {precision_20_val:.2f}%")
+    logging.info(f"Training precision 10%: {precision_10:.2f}%, Validation precision 10%: {precision_10_val:.2f}%")
+    logging.info(f"Training precision 5%: {precision_5:.2f}%, Validation precision 5%: {precision_5_val:.2f}%")
+    logging.info(f"Training n_samples: {len(y_train_actual)}, Validation n_samples: {len(y_val_actual)}")
+    logging.info(f"Training n_valid_samples: {len(y_train_actual[~np.isnan(y_train_actual)])}, Validation n_valid_samples: {len(y_val_actual[~np.isnan(y_val_actual)])}")
+    logging.info(f"Training n_missing_labels: {len(y_train_actual[np.isnan(y_train_actual)])}, Validation n_missing_labels: {len(y_val_actual[np.isnan(y_val_actual)])}")
+    logging.info(f"Training mean relative error: {np.mean(relative_errors):.5f}, Validation mean relative error: {np.mean(relative_errors_val):.5f}")
 
     # Save model along with other stuff
     logging.info("Saving run with ID %s", run_id)

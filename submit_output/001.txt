@@ -1,0 +1,10 @@
+INFO:root:Training RMSE: 455392.81250, Validation RMSE: 490536.62500
+INFO:root:Training R²: 0.96640, Validation R²: 0.95842
+INFO:root:Training precision 20%: 94.84%, Validation precision 20%: 93.01%
+INFO:root:Training precision 10%: 77.05%, Validation precision 10%: 66.67%
+INFO:root:Training precision 5%: 49.76%, Validation precision 5%: 37.16%
+INFO:root:Training n_samples: 50000, Validation n_samples: 8573
+INFO:root:Training n_valid_samples: 50000, Validation n_valid_samples: 8573
+INFO:root:Training n_missing_labels: 0, Validation n_missing_labels: 0
+INFO:root:Training mean relative error: 0.07434, Validation mean relative error: 0.08802
+INFO:root:Saving run with ID bc22706f-b1ee-41b2-be80-88a7e9e6c4a4
