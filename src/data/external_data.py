@@ -764,13 +764,13 @@ def main(
     # training_tabpfn.py uses: size=10000, seed=42 (implicit default)
     TRAINING_TABPFN_SEED = 42
     TRAINING_TABPFN_SIZE = 10000
-    
+
     # Set defaults to match training_tabpfn.py if not provided
     if seed is None:
         seed = TRAINING_TABPFN_SEED
     if size is None:
         size = TRAINING_TABPFN_SIZE
-    
+
     # Enable limit_apartments only when seed and size match training_tabpfn.py
     if seed == TRAINING_TABPFN_SEED and size == TRAINING_TABPFN_SIZE:
         if limit_apartments is None:

@@ -16,6 +16,7 @@ from src.data.process import (
     remove_unused_columns,
 )
 from src.data.constants import CAT_COLUMNS
+from src.data.feature_engineering import apply_feature_engineering
 from src.model.utils import get_device
 
 
@@ -49,17 +50,17 @@ def main():
     # perform time-based split
     df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
 
-    # Limit training data to most recent 10,000 samples (sorted by TRADE_DATE)
+    # Limit training data to most recent 50,000 samples (sorted by TRADE_DATE)
     # This helps with TabPFN performance on CPU and memory constraints
     if "TRADE_DATE" in df_train_split.columns:
         df_train_split = df_train_split.sort_values("TRADE_DATE")
-        df_train_split = df_train_split.tail(10000)
+        df_train_split = df_train_split.tail(50000)
         logging.info(
-            f"Limited training data to most recent 10,000 samples (from {len(df_train_raw)} total)"
+            f"Limited training data to most recent 50,000 samples (from {len(df_train_raw)} total)"
         )
     else:
-        logging.warning("TRADE_DATE not found, using last 10,000 samples by index")
-        df_train_split = df_train_split.tail(10000)
+        logging.warning("TRADE_DATE not found, using last 50,000 samples by index")
+        df_train_split = df_train_split.tail(50000)
 
     # Save validation indices for evaluation
     val_indices = df_val_split.index.values
@@ -91,36 +92,50 @@ def main():
         df_val_split, "train", data_config["reduce_zip"]
     )
 
-    # Expand TRADE_DATE for both splits
-    for df in [df_train_split, df_val_split]:
-        trade_dates = pd.to_datetime(df["TRADE_DATE"])
-        df["TRADE_YEAR"] = trade_dates.dt.year.values
-        df["TRADE_MONTH"] = trade_dates.dt.month.values
-        df["TRADE_DOW"] = trade_dates.dt.dayofweek.values
-        df.drop(["TRADE_DATE"], axis=1, inplace=True)
-
-    # Remove unused columns
+    # Remove unused columns before feature engineering
     df_train_split = remove_unused_columns(df_train_split)
     df_val_split = remove_unused_columns(df_val_split)
 
+    # Apply optimized feature engineering (includes date expansion, age features,
+    # area features, interactions, and low-variance feature removal)
+    df_train_split, df_val_split = apply_feature_engineering(
+        df_train_split,
+        df_val_split,
+        remove_low_variance=True,
+        variance_threshold=0.01,
+    )
+
     # One-hot encode - need to ensure consistent columns
     # Get all possible categorical values from training data
-    df_train_encoded = pd.get_dummies(df_train_split, columns=CAT_COLUMNS, dtype="int8")
-    df_val_encoded = pd.get_dummies(df_val_split, columns=CAT_COLUMNS, dtype="int8")
+    # Note: CAT_COLUMNS may have been transformed, so we need to identify categorical columns
+    # that still exist and haven't been one-hot encoded yet
+    remaining_cat_cols = [col for col in CAT_COLUMNS if col in df_train_split.columns]
 
-    # Align columns (add missing columns with 0s)
-    train_cols = set(df_train_encoded.columns)
-    val_cols = set(df_val_encoded.columns)
-    for col in train_cols - val_cols:
-        df_val_encoded[col] = 0
-    for col in val_cols - train_cols:
-        df_train_encoded[col] = 0
+    if remaining_cat_cols:
+        df_train_encoded = pd.get_dummies(
+            df_train_split, columns=remaining_cat_cols, dtype="int8"
+        )
+        df_val_encoded = pd.get_dummies(
+            df_val_split, columns=remaining_cat_cols, dtype="int8"
+        )
 
-    # Reorder columns to match
-    df_val_encoded = df_val_encoded[df_train_encoded.columns]
+        # Align columns (add missing columns with 0s)
+        train_cols = set(df_train_encoded.columns)
+        val_cols = set(df_val_encoded.columns)
+        for col in train_cols - val_cols:
+            df_val_encoded[col] = 0
+        for col in val_cols - train_cols:
+            df_train_encoded[col] = 0
 
-    df_train = df_train_encoded.astype("float32")
-    df_val = df_val_encoded.astype("float32")
+        # Reorder columns to match
+        df_val_encoded = df_val_encoded[df_train_encoded.columns]
+
+        df_train = df_train_encoded.astype("float32")
+        df_val = df_val_encoded.astype("float32")
+    else:
+        # No categorical columns to encode
+        df_train = df_train_split.astype("float32")
+        df_val = df_val_split.astype("float32")
 
     # split into features and labels
     X_train = df_train.drop("PRICE", axis=1)

@@ -18,6 +18,13 @@ from src.data.process import (
     remove_unused_columns,
 )
 from src.data.constants import CAT_COLUMNS
+from src.data.feature_engineering import (
+    create_advanced_date_features,
+    create_age_features,
+    create_area_features,
+    create_interaction_features,
+    create_price_ratio_features,
+)
 from src.model.utils import get_device
 
 
@@ -95,18 +102,24 @@ def compute_metrics(
                 df_val_split, "train", data_config["reduce_zip"]
             )
 
-            # Expand TRADE_DATE
-            trade_dates = pd.to_datetime(df_val_split["TRADE_DATE"])
-            df_val_split["TRADE_YEAR"] = trade_dates.dt.year.values
-            df_val_split["TRADE_MONTH"] = trade_dates.dt.month.values
-            df_val_split["TRADE_DOW"] = trade_dates.dt.dayofweek.values
-            df_val_split.drop(["TRADE_DATE"], axis=1, inplace=True)
-
-            # Remove unused columns and one-hot encode
+            # Remove unused columns before feature engineering
             df_val_split = remove_unused_columns(df_val_split)
-            df_val_encoded = pd.get_dummies(
-                df_val_split, columns=CAT_COLUMNS, dtype="int8"
-            )
+
+            # Apply the same feature engineering as training
+            df_val_split = create_advanced_date_features(df_val_split)
+            df_val_split = create_age_features(df_val_split)
+            df_val_split = create_area_features(df_val_split)
+            df_val_split = create_interaction_features(df_val_split)
+            df_val_split = create_price_ratio_features(df_val_split)
+
+            # One-hot encode categorical columns
+            remaining_cat_cols = [col for col in CAT_COLUMNS if col in df_val_split.columns]
+            if remaining_cat_cols:
+                df_val_encoded = pd.get_dummies(
+                    df_val_split, columns=remaining_cat_cols, dtype="int8"
+                )
+            else:
+                df_val_encoded = df_val_split.copy()
 
             # Extract PRICE before filtering to train_features (which doesn't include PRICE)
             y_true = df_val_encoded["PRICE"].values.copy()
@@ -148,17 +161,24 @@ def compute_metrics(
                 df_val_split, "train", data_config["reduce_zip"]
             )
 
-            # Expand TRADE_DATE
-            trade_dates = pd.to_datetime(df_val_split["TRADE_DATE"])
-            df_val_split["TRADE_YEAR"] = trade_dates.dt.year.values
-            df_val_split["TRADE_MONTH"] = trade_dates.dt.month.values
-            df_val_split["TRADE_DOW"] = trade_dates.dt.dayofweek.values
-            df_val_split.drop(["TRADE_DATE"], axis=1, inplace=True)
-
+            # Remove unused columns before feature engineering
             df_val_split = remove_unused_columns(df_val_split)
-            df_val_encoded = pd.get_dummies(
-                df_val_split, columns=CAT_COLUMNS, dtype="int8"
-            )
+
+            # Apply the same feature engineering as training
+            df_val_split = create_advanced_date_features(df_val_split)
+            df_val_split = create_age_features(df_val_split)
+            df_val_split = create_area_features(df_val_split)
+            df_val_split = create_interaction_features(df_val_split)
+            df_val_split = create_price_ratio_features(df_val_split)
+
+            # One-hot encode categorical columns
+            remaining_cat_cols = [col for col in CAT_COLUMNS if col in df_val_split.columns]
+            if remaining_cat_cols:
+                df_val_encoded = pd.get_dummies(
+                    df_val_split, columns=remaining_cat_cols, dtype="int8"
+                )
+            else:
+                df_val_encoded = df_val_split.copy()
 
             # Extract PRICE before filtering to train_features (which doesn't include PRICE)
             y_true = df_val_encoded["PRICE"].values.copy()
@@ -184,7 +204,32 @@ def compute_metrics(
         X_eval = df_eval.copy()
     else:
         # load evaluation data for test or train splits
-        df_eval = get_data(split, run_id, **data_config)
+        # Process data using the same pipeline as training
+        df_eval = get_raw_data(split)
+        df_eval = transform_values(
+            df_eval,
+            split,
+            run_id,
+            data_config["calculate_street_price_sqm"],
+            data_config["reduce_zip"],
+            data_config["reduce_municipality"],
+        )
+        df_eval = handle_missing_values(df_eval, split, data_config["reduce_zip"])
+        df_eval = remove_unused_columns(df_eval)
+
+        # Apply the same feature engineering as training
+        df_eval = create_advanced_date_features(df_eval)
+        df_eval = create_age_features(df_eval)
+        df_eval = create_area_features(df_eval)
+        df_eval = create_interaction_features(df_eval)
+        df_eval = create_price_ratio_features(df_eval)
+
+        # One-hot encode categorical columns
+        remaining_cat_cols = [col for col in CAT_COLUMNS if col in df_eval.columns]
+        if remaining_cat_cols:
+            df_eval = pd.get_dummies(df_eval, columns=remaining_cat_cols, dtype="int8")
+        else:
+            df_eval = df_eval.copy()
 
         # check if labels are available and save them
         has_labels = "PRICE" in df_eval.columns
