@@ -28,6 +28,22 @@ from src.data.constants import CAT_COLUMNS
 from src.model.utils import get_device
 
 
+def convert_to_json_serializable(obj):
+    """Convert numpy types and other non-JSON-serializable types to native Python types."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_to_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_json_serializable(item) for item in obj]
+    else:
+        return obj
+
+
 def main():
     device = get_device()
 
@@ -157,7 +173,7 @@ def main():
         "This will perform hyperparameter optimization, which may take some time..."
     )
 
-    regressor = TunedTabPFNRegressor(device=device, ignore_pretraining_limits=True)
+    regressor = TunedTabPFNRegressor(device=device)
 
     # TabPFN works with pandas DataFrames directly
     # Convert to DataFrame if needed (already is, but ensure proper format)
@@ -249,9 +265,13 @@ def main():
 
     # Try to extract best hyperparameters if available
     if hasattr(regressor, "best_params_"):
-        model_config["best_params"] = regressor.best_params_
+        model_config["best_params"] = convert_to_json_serializable(
+            regressor.best_params_
+        )
     elif hasattr(regressor, "best_params"):
-        model_config["best_params"] = regressor.best_params
+        model_config["best_params"] = convert_to_json_serializable(
+            regressor.best_params
+        )
 
     with open(os.path.join(model_dir, "model_config.json"), "w") as f:
         json.dump(model_config, f, indent=4)

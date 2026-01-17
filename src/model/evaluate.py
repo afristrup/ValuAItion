@@ -29,16 +29,26 @@ from src.model.utils import get_device
 @click.option(
     "--submit", is_flag=True, help="Whether to submit test predictions to endpoint."
 )
-def main(run_id: str, split: str, submit: bool):
+@click.option(
+    "--limit",
+    type=int,
+    default=None,
+    help="Limit the number of predictions to compute (e.g., 100).",
+)
+def main(run_id: str, split: str, submit: bool, limit: int):
     model_dir = os.path.join("models", run_id)
     save_path = os.path.join(model_dir, f"df_{split}.csv")
-    if os.path.exists(save_path):
+    if os.path.exists(save_path) and limit is None:
         logging.info("Loading previously computed predictions.")
         df_eval = pd.read_csv(save_path)
     else:
-        logging.info(f"Computing predictions for {split} set.")
-        df_eval = compute_metrics(model_dir, run_id, split)
-        df_eval.to_csv(save_path)
+        if limit is not None:
+            logging.info(f"Computing predictions for {split} set with limit={limit}.")
+        else:
+            logging.info(f"Computing predictions for {split} set.")
+        df_eval = compute_metrics(model_dir, run_id, split, limit=limit)
+        if limit is None:
+            df_eval.to_csv(save_path)
 
     if submit:
         if split != "test":
@@ -48,8 +58,16 @@ def main(run_id: str, split: str, submit: bool):
             upload_results(predictions, model_dir)
 
 
-def compute_metrics(model_dir: str, run_id: str, split: str = "test"):
+def compute_metrics(
+    model_dir: str, run_id: str, split: str = "test", limit: int = None
+):
     device = get_device()
+    if device == "cuda":
+        logging.info("Using CUDA GPU for evaluation")
+    elif device == "mps":
+        logging.info("Using MPS (Metal) for evaluation")
+    else:
+        logging.warning("Using CPU for evaluation - GPU acceleration not available")
 
     # load data config
     with open("data_config.json", "r") as f:
@@ -89,6 +107,10 @@ def compute_metrics(model_dir: str, run_id: str, split: str = "test"):
             df_val_encoded = pd.get_dummies(
                 df_val_split, columns=CAT_COLUMNS, dtype="int8"
             )
+
+            # Extract PRICE before filtering to train_features (which doesn't include PRICE)
+            y_true = df_val_encoded["PRICE"].values.copy()
+            df_val_encoded = df_val_encoded.drop("PRICE", axis=1)
 
             # Load feature names used for training
             with open(os.path.join(model_dir, "train_features.txt"), "r") as f:
@@ -138,6 +160,10 @@ def compute_metrics(model_dir: str, run_id: str, split: str = "test"):
                 df_val_split, columns=CAT_COLUMNS, dtype="int8"
             )
 
+            # Extract PRICE before filtering to train_features (which doesn't include PRICE)
+            y_true = df_val_encoded["PRICE"].values.copy()
+            df_val_encoded = df_val_encoded.drop("PRICE", axis=1)
+
             # Load feature names used for training
             with open(os.path.join(model_dir, "train_features.txt"), "r") as f:
                 train_features = [x.strip() for x in f.readlines()]
@@ -153,10 +179,9 @@ def compute_metrics(model_dir: str, run_id: str, split: str = "test"):
             df_val_encoded = df_val_encoded[train_features]
             df_eval = df_val_encoded.astype("float32")
 
-        # Extract y_true from the validation split
-        y_true = df_eval["PRICE"].values.copy()
+        # y_true is already extracted above for both validation split branches
         has_labels = True
-        X_eval = df_eval.drop("PRICE", axis=1).copy()
+        X_eval = df_eval.copy()
     else:
         # load evaluation data for test or train splits
         df_eval = get_data(split, run_id, **data_config)
@@ -182,6 +207,14 @@ def compute_metrics(model_dir: str, run_id: str, split: str = "test"):
     # remove extra features and reorder
     X_eval = X_eval[train_features]
 
+    # apply limit if specified
+    if limit is not None and limit > 0:
+        logging.info(f"Limiting evaluation to {limit} samples.")
+        X_eval = X_eval.head(limit)
+        df_eval = df_eval.head(limit).copy()
+        if has_labels:
+            y_true = y_true[:limit]
+
     # scale features if applicable for model
     scaler_path = os.path.join(model_dir, "scaler.pkl")
     if os.path.exists(scaler_path):
@@ -190,14 +223,59 @@ def compute_metrics(model_dir: str, run_id: str, split: str = "test"):
     else:
         X_eval_scaled = X_eval.values
 
-    # move data to device
-    X_eval_tensor = torch.from_numpy(X_eval_scaled).to(device)
+    # load model with GPU support
+    model_config_path = os.path.join(model_dir, "model_config.json")
+    model_type = None
+    if os.path.exists(model_config_path):
+        with open(model_config_path, "r") as f:
+            model_config_data = json.load(f)
+            model_type = model_config_data.get("model_type", None)
 
-    # load model
-    model = joblib.load(os.path.join(model_dir, "model.pkl"))
+    # Try to load TabPFN models with proper device configuration
+    tabpfn_model_path = os.path.join(model_dir, "model.tabpfn_fit")
+    if model_type and "TabPFN" in model_type and os.path.exists(tabpfn_model_path):
+        from tabpfn.model_loading import load_fitted_tabpfn_model
+
+        logging.info(
+            f"Loading TabPFN model from .tabpfn_fit file with device: {device}"
+        )
+        model = load_fitted_tabpfn_model(tabpfn_model_path, device=device)
+    else:
+        # Load other models (XGBoost, RandomForestTabPFN saved as pkl, etc.)
+        model = joblib.load(os.path.join(model_dir, "model.pkl"))
+        # Check if model was trained on a different device
+        if model_type and "TabPFN" in model_type:
+            saved_device = None
+            if os.path.exists(model_config_path):
+                with open(model_config_path, "r") as f:
+                    saved_config = json.load(f)
+                    saved_device = saved_config.get("device", None)
+            if saved_device and saved_device != device:
+                logging.warning(
+                    f"Model was trained on {saved_device}, but current device is {device}. "
+                    f"Model will use {saved_device} if available, otherwise {device}."
+                )
+            # RandomForestTabPFNRegressor models should already have device set from training
+            # The internal TabPFN models will use the device they were trained on
+            if hasattr(model, "device"):
+                logging.info(f"Model device attribute: {model.device}")
+
+    # Check model type and prepare input accordingly
+    # TabPFN models work with DataFrames, sklearn models work with numpy arrays
+    if model_type is None:
+        model_type = type(model).__name__
+    if "TabPFN" in model_type:
+        # TabPFN models expect pandas DataFrames
+        X_eval_input = pd.DataFrame(
+            X_eval_scaled, columns=X_eval.columns, index=X_eval.index
+        )
+    else:
+        # Other models (XGBoost, sklearn, etc.) work with numpy arrays
+        X_eval_input = X_eval_scaled
 
     # predict
-    y_hat = model.predict(X_eval_tensor)
+    logging.info(f"Making predictions on {device}...")
+    y_hat = model.predict(X_eval_input)
     if data_config["log_y"]:
         y_hat = np.exp(y_hat)
 
