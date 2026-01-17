@@ -9,8 +9,15 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
-from src.data.process import get_data
+from src.data.process import (
+    get_data,
+    get_raw_data,
+    time_based_split,
+    transform_values,
+    handle_missing_values,
+    remove_unused_columns,
+)
+from src.data.constants import CAT_COLUMNS
 from src.model.utils import get_device
 
 
@@ -50,34 +57,104 @@ def compute_metrics(model_dir: str, run_id: str, split: str = "test"):
 
     # handle validation split specially - it needs to be created from training data
     if split == "val":
-        # load training data
-        df_train = get_data("train", run_id, **data_config)
-        df_train = df_train.astype("float32")
-
-        # split into features and labels
-        X = df_train.drop("PRICE", axis=1)
-
         # Check if split indices were saved during training
         split_indices_path = os.path.join(model_dir, "val_indices.npy")
         if os.path.exists(split_indices_path):
-            # Load saved validation indices
-            val_indices = np.load(split_indices_path)
-            df_eval = df_train.iloc[val_indices].copy()
-            # Extract y_true from the validation split
-            y_true = df_eval["PRICE"].values.copy()
+            # Load raw training data and recreate the time-based split
+            df_train_raw = get_raw_data("train")
+            df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+
+            # Process validation data (using training statistics)
+            df_val_split = transform_values(
+                df_val_split,
+                "train",
+                run_id,
+                data_config["calculate_street_price_sqm"],
+                data_config["reduce_zip"],
+                data_config["reduce_municipality"],
+            )
+            df_val_split = handle_missing_values(
+                df_val_split, "train", data_config["reduce_zip"]
+            )
+
+            # Expand TRADE_DATE
+            trade_dates = pd.to_datetime(df_val_split["TRADE_DATE"])
+            df_val_split["TRADE_YEAR"] = trade_dates.dt.year.values
+            df_val_split["TRADE_MONTH"] = trade_dates.dt.month.values
+            df_val_split["TRADE_DOW"] = trade_dates.dt.dayofweek.values
+            df_val_split.drop(["TRADE_DATE"], axis=1, inplace=True)
+
+            # Remove unused columns and one-hot encode
+            df_val_split = remove_unused_columns(df_val_split)
+            df_val_encoded = pd.get_dummies(
+                df_val_split, columns=CAT_COLUMNS, dtype="int8"
+            )
+
+            # Load feature names used for training
+            with open(os.path.join(model_dir, "train_features.txt"), "r") as f:
+                train_features = [x.strip() for x in f.readlines()]
+
+            # Align columns with training features
+            missing_features = [
+                x for x in train_features if x not in df_val_encoded.columns
+            ]
+            for feature in missing_features:
+                df_val_encoded.loc[:, feature] = 0
+
+            # Remove extra features and reorder
+            df_val_encoded = df_val_encoded[train_features]
+            df_eval = df_val_encoded.astype("float32")
         else:
-            # Recreate split with fixed seed (may not match original split)
+            # Recreate time-based split if indices not found
             logging.warning(
-                "Validation split indices not found. Recreating split with seed=42. "
+                "Validation split indices not found. Recreating time-based split. "
                 "This may not match the exact split used during training."
             )
-            _, val_indices = train_test_split(
-                np.arange(len(X)), test_size=0.1, shuffle=True, random_state=42
-            )
-            df_eval = df_train.iloc[val_indices].copy()
-            # Extract y_true from the validation split
-            y_true = df_eval["PRICE"].values.copy()
+            df_train_raw = get_raw_data("train")
+            _, df_val_split = time_based_split(df_train_raw, test_size=0.1)
 
+            # Process validation data
+            df_val_split = transform_values(
+                df_val_split,
+                "train",
+                run_id,
+                data_config["calculate_street_price_sqm"],
+                data_config["reduce_zip"],
+                data_config["reduce_municipality"],
+            )
+            df_val_split = handle_missing_values(
+                df_val_split, "train", data_config["reduce_zip"]
+            )
+
+            # Expand TRADE_DATE
+            trade_dates = pd.to_datetime(df_val_split["TRADE_DATE"])
+            df_val_split["TRADE_YEAR"] = trade_dates.dt.year.values
+            df_val_split["TRADE_MONTH"] = trade_dates.dt.month.values
+            df_val_split["TRADE_DOW"] = trade_dates.dt.dayofweek.values
+            df_val_split.drop(["TRADE_DATE"], axis=1, inplace=True)
+
+            df_val_split = remove_unused_columns(df_val_split)
+            df_val_encoded = pd.get_dummies(
+                df_val_split, columns=CAT_COLUMNS, dtype="int8"
+            )
+
+            # Load feature names used for training
+            with open(os.path.join(model_dir, "train_features.txt"), "r") as f:
+                train_features = [x.strip() for x in f.readlines()]
+
+            # Align columns with training features
+            missing_features = [
+                x for x in train_features if x not in df_val_encoded.columns
+            ]
+            for feature in missing_features:
+                df_val_encoded.loc[:, feature] = 0
+
+            # Remove extra features and reorder
+            df_val_encoded = df_val_encoded[train_features]
+            df_eval = df_val_encoded.astype("float32")
+
+        # Extract y_true from the validation split
+        y_true = df_eval["PRICE"].values.copy()
         has_labels = True
         X_eval = df_eval.drop("PRICE", axis=1).copy()
     else:

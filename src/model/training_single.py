@@ -4,12 +4,19 @@ import torch
 import joblib
 import logging
 import numpy as np
+import pandas as pd
 from uuid import uuid4
 from pathlib import Path
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split
 
-from src.data.process import get_data
+from src.data.process import (
+    get_raw_data,
+    time_based_split,
+    transform_values,
+    handle_missing_values,
+    remove_unused_columns,
+)
+from src.data.constants import CAT_COLUMNS
 from src.model.utils import get_device
 
 
@@ -25,48 +32,109 @@ def main():
     with open("data_config.json", "r") as f:
         data_config = json.load(f)
 
-    # load training data
-    df_train = get_data("train", run_id, **data_config)
-    df_train = df_train.astype("float32")
-
     # load model and data configuration
     with open("model_config.json", "r") as f:
         model_config = json.load(f)
     with open("data_config.json", "r") as f:
         data_config = json.load(f)
 
+    # load raw training data for time-based splitting
+    df_train_raw = get_raw_data("train")
+
+    # perform time-based split
+    df_train_split, df_val_split = time_based_split(df_train_raw, test_size=0.1)
+
+    # Save validation indices for evaluation
+    val_indices = df_val_split.index.values
+    np.save(os.path.join(model_dir, "val_indices.npy"), val_indices)
+
+    # Process training data
+    df_train_split = transform_values(
+        df_train_split,
+        "train",
+        run_id,
+        data_config["calculate_street_price_sqm"],
+        data_config["reduce_zip"],
+        data_config["reduce_municipality"],
+    )
+    df_train_split = handle_missing_values(
+        df_train_split, "train", data_config["reduce_zip"]
+    )
+
+    # Process validation data (using training statistics)
+    df_val_split = transform_values(
+        df_val_split,
+        "train",
+        run_id,
+        data_config["calculate_street_price_sqm"],
+        data_config["reduce_zip"],
+        data_config["reduce_municipality"],
+    )
+    df_val_split = handle_missing_values(
+        df_val_split, "train", data_config["reduce_zip"]
+    )
+
+    # Expand TRADE_DATE for both splits
+    for df in [df_train_split, df_val_split]:
+        trade_dates = pd.to_datetime(df["TRADE_DATE"])
+        df["TRADE_YEAR"] = trade_dates.dt.year.values
+        df["TRADE_MONTH"] = trade_dates.dt.month.values
+        df["TRADE_DOW"] = trade_dates.dt.dayofweek.values
+        df.drop(["TRADE_DATE"], axis=1, inplace=True)
+
+    # Remove unused columns
+    df_train_split = remove_unused_columns(df_train_split)
+    df_val_split = remove_unused_columns(df_val_split)
+
+    # One-hot encode - need to ensure consistent columns
+    # Get all possible categorical values from training data
+    df_train_encoded = pd.get_dummies(df_train_split, columns=CAT_COLUMNS, dtype="int8")
+    df_val_encoded = pd.get_dummies(df_val_split, columns=CAT_COLUMNS, dtype="int8")
+
+    # Align columns (add missing columns with 0s)
+    train_cols = set(df_train_encoded.columns)
+    val_cols = set(df_val_encoded.columns)
+    for col in train_cols - val_cols:
+        df_val_encoded[col] = 0
+    for col in val_cols - train_cols:
+        df_train_encoded[col] = 0
+
+    # Reorder columns to match
+    df_val_encoded = df_val_encoded[df_train_encoded.columns]
+
+    df_train = df_train_encoded.astype("float32")
+    df_val = df_val_encoded.astype("float32")
+
     # split into features and labels
-    X = df_train.drop("PRICE", axis=1)
-    y = df_train["PRICE"].values
+    X_train = df_train.drop("PRICE", axis=1)
+    y_train = df_train["PRICE"].values
+    X_val = df_val.drop("PRICE", axis=1)
+    y_val = df_val["PRICE"].values
 
     if data_config["log_y"]:
-        y = np.log(y)
+        y_train = np.log(y_train)
+        y_val = np.log(y_val)
 
     # store training features in list
     with open(os.path.join(model_dir, "train_features.txt"), "w") as f:
-        f.writelines("\n".join(X.columns.tolist()))
-
-    # split into training and validation sets
-    X_train, X_val, y_train, y_val = train_test_split(
-        X.values, y, shuffle=True, test_size=0.1
-    )
+        f.writelines("\n".join(X_train.columns.tolist()))
 
     # move all arrays to device
-    X_train = torch.from_numpy(X_train).to(device)
-    X_val = torch.from_numpy(X_val).to(device)
-    y_train = torch.from_numpy(y_train).to(device)
-    y_val = torch.from_numpy(y_val).to(device)
+    X_train_tensor = torch.from_numpy(X_train.values).to(device)
+    X_val_tensor = torch.from_numpy(X_val.values).to(device)
+    y_train_tensor = torch.from_numpy(y_train).to(device)
+    y_val_tensor = torch.from_numpy(y_val).to(device)
 
     # define model
     model = XGBRegressor(**model_config, device=device)
 
     # fit on training data
-    model = model.fit(X_train, y_train)
+    model = model.fit(X_train_tensor, y_train_tensor)
 
     # compute scores
     model_scores = {
-        "train_score": np.round(model.score(X_train, y_train), 5),
-        "val_score": np.round(model.score(X_val, y_val), 5),
+        "train_score": np.round(model.score(X_train_tensor, y_train_tensor), 5),
+        "val_score": np.round(model.score(X_val_tensor, y_val_tensor), 5),
     }
 
     # save model along with other stuff

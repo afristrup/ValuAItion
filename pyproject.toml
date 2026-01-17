@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "click==8.1.7",
+    "geopy>=2.4.0",
     "joblib==1.4.2",
     "jupyter==1.1.1",
     "matplotlib==3.9.2",
@@ -15,9 +16,13 @@ dependencies = [
     "pandas==2.2.3",
     "pillow==11.0.0",
     "python-dotenv==1.0.1",
+    "requests>=2.32.0",
     "scikit-learn==1.5.2",
     "seaborn==0.13.2",
+    "tabpfn>=6.0.0",
+    "tabpfn-extensions>=0.2.0",
     "torch>=2.5.1",
+    "tqdm>=4.67.0",
     "wget==3.2",
     "xgboost==2.1.2",
 ]

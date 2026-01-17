@@ -16,15 +16,8 @@ from .constants import (
 )
 
 
-def get_data(
-    split: str,
-    run_id: str,
-    calculate_street_price_sqm: bool,
-    reduce_zip: bool,
-    reduce_municipality: bool,
-    *args,
-    **kwargs,
-) -> pd.DataFrame:
+def get_raw_data(split: str) -> pd.DataFrame:
+    """Load raw data with TRADE_DATE preserved for time-based splitting."""
     dataset_path = os.path.join(
         "datasets", f"Resights_Hackathon_Ejerlejligheder_{split.upper()}.csv"
     )
@@ -37,6 +30,47 @@ def get_data(
             f"Failed to read CSV with default engine, trying python engine: {e}"
         )
         df = pd.read_csv(dataset_path, sep=",", engine="python", encoding="utf-8")
+    return df
+
+
+def time_based_split(
+    df: pd.DataFrame, test_size: float = 0.1, date_col: str = "TRADE_DATE"
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split dataframe based on time, using the earliest (1-test_size) for train and latest test_size for val.
+
+    Args:
+        df: DataFrame with a date column
+        test_size: Proportion of data to use for validation (latest dates)
+        date_col: Name of the date column
+
+    Returns:
+        Tuple of (train_df, val_df) sorted by date
+    """
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(date_col)
+
+    n_total = len(df)
+    n_val = int(n_total * test_size)
+    n_train = n_total - n_val
+
+    train_df = df.iloc[:n_train].copy()
+    val_df = df.iloc[n_train:].copy()
+
+    return train_df, val_df
+
+
+def get_data(
+    split: str,
+    run_id: str,
+    calculate_street_price_sqm: bool,
+    reduce_zip: bool,
+    reduce_municipality: bool,
+    *args,
+    **kwargs,
+) -> pd.DataFrame:
+    df = get_raw_data(split)
     df = transform_values(
         df, split, run_id, calculate_street_price_sqm, reduce_zip, reduce_municipality
     )
